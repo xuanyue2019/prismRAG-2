@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  # Agent Lightning 训练服务器
+  agent-lightning-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8000:8000"
+      - "9090:9090"  # 指标监控端口
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENTOPS_API_KEY=${AGENTOPS_API_KEY}
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/app
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./logs:/app/logs
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 示例智能体客户端 (AutoGen)
+  agent-client-autogen:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      - SERVER_URL=http://agent-lightning-server:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENTOPS_API_KEY=${AGENTOPS_API_KEY}
+      - AGENT_NAME=autogen-agent
+    volumes:
+      - ./examples/autogen:/app/examples
+      - ./logs:/app/logs
+    depends_on:
+      - agent-lightning-server
+    networks:
+      - agent-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  # 示例智能体客户端 (LangChain)
+  agent-client-langchain:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      - SERVER_URL=http://agent-lightning-server:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENTOPS_API_KEY=${AGENTOPS_API_KEY}
+      - AGENT_NAME=langchain-agent
+      - FRAMEWORK=langchain
+    volumes:
+      - ./examples/langchain:/app/examples
+      - ./logs:/app/logs
+    depends_on:
+      - agent-lightning-server
+    networks:
+      - agent-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  # 监控和仪表板 (可选)
+  monitoring:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana:/var/lib/grafana
+      - ./monitoring/dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    networks:
+      - agent-network
+    restart: unless-stopped
+
+  # Prometheus 指标收集 (可选)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - agent-network
+    restart: unless-stopped
+
+  # Redis 缓存 (可选)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL 数据库 (可选)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=agentlightning
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  prometheus_data:
+    driver: local
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  agent-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1

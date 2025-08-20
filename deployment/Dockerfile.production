@@ -1,0 +1,278 @@
+# PrismRAG Production Dockerfile
+# Multi-stage build for optimized production deployment
+
+# Stage 1: Base image with system dependencies
+FROM nvidia/cuda:12.2.2-base-ubuntu22.04 AS base
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PIP_DEFAULT_TIMEOUT=100 \
+    POETRY_VERSION=1.8.2 \
+    POETRY_HOME="/opt/poetry" \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_NO_INTERACTION=1
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libssl-dev \
+    libffi-dev \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symbolic link for python3
+RUN ln -s /usr/bin/python3.10 /usr/bin/python
+
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 - && \
+    cd /usr/local/bin && \
+    ln -s /opt/poetry/bin/poetry && \
+    poetry config virtualenvs.create false
+
+# Stage 2: Dependencies installation
+FROM base AS dependencies
+
+# Copy poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Install project dependencies
+RUN poetry install --only main --no-root --no-interaction
+
+# Stage 3: Build application
+FROM dependencies AS build
+
+# Copy application source code
+COPY . .
+
+# Install application in editable mode
+RUN poetry install --only-root --no-interaction
+
+# Create non-root user
+RUN groupadd -r prismrag && useradd -r -g prismrag prismrag && \
+    chown -R prismrag:prismrag /app
+
+# Stage 4: Production runtime
+FROM base AS production
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from build stage
+COPY --from=build /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=build /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY --from=build /app /app
+
+# Copy production configuration
+COPY deployment/production_config.yaml /app/config/production.yaml
+
+# Create non-root user
+RUN groupadd -r prismrag && useradd -r -g prismrag prismrag && \
+    chown -R prismrag:prismrag /app
+
+# Switch to non-root user
+USER prismrag
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/models /app/outputs /app/logs /app/cache && \
+    chown -R prismrag:prismrag /app/data /app/models /app/outputs /app/logs /app/cache
+
+# Set environment variables for production
+ENV ENVIRONMENT=production \
+    CONFIG_FILE=/app/config/production.yaml \
+    LOG_LEVEL=INFO \
+    PYTHONPATH=/app
+
+# Expose ports
+EXPOSE 8080
+EXPOSE 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health/live || exit 1
+
+# Default command
+CMD ["python", "-m", "src.main"]
+
+# Stage 5: Development image (optional)
+FROM dependencies AS development
+
+# Install development dependencies
+RUN poetry install --no-root --no-interaction
+
+# Copy application source code
+COPY . .
+
+# Install application in development mode
+RUN poetry install --no-interaction
+
+# Create non-root user
+RUN groupadd -r prismrag && useradd -r -g prismrag prismrag && \
+    chown -R prismrag:prismrag /app
+
+# Switch to non-root user
+USER prismrag
+
+# Set environment variables for development
+ENV ENVIRONMENT=development \
+    CONFIG_FILE=/app/config/default.yaml \
+    LOG_LEVEL=DEBUG \
+    PYTHONPATH=/app
+
+# Expose ports
+EXPOSE 8080 8081
+
+# Command for development
+CMD ["python", "-m", "src.main", "--reload"]
+
+# Stage 6: Testing image
+FROM dependencies AS testing
+
+# Install testing dependencies
+RUN poetry install --with test --no-root --no-interaction
+
+# Copy application source code
+COPY . .
+
+# Install application
+RUN poetry install --no-interaction
+
+# Create non-root user
+RUN groupadd -r prismrag && useradd -r -g prismrag prismrag && \
+    chown -R prismrag:prismrag /app
+
+# Switch to non-root user
+USER prismrag
+
+# Set environment variables for testing
+ENV ENVIRONMENT=testing \
+    CONFIG_FILE=/app/config/test.yaml \
+    LOG_LEVEL=DEBUG \
+    PYTHONPATH=/app
+
+# Run tests
+CMD ["python", "-m", "pytest", "tests/", "-v", "--cov=src", "--cov-report=html"]
+
+# Stage 7: Builder image for CI/CD
+FROM base AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Install all dependencies
+RUN poetry install --no-root --no-interaction
+
+# Copy application source code
+COPY . .
+
+# Install application
+RUN poetry install --no-interaction
+
+# Run security scan
+RUN poetry run safety check --full-report
+
+# Run linting
+RUN poetry run black --check src/ tests/ && \
+    poetry run isort --check-only src/ tests/ && \
+    poetry run flake8 src/ tests/ && \
+    poetry run mypy src/
+
+# Run tests
+RUN poetry run pytest tests/ -v --cov=src --cov-report=xml
+
+# Build distribution
+RUN poetry build
+
+# Stage 8: Minimal production image
+FROM python:3.10-slim AS minimal
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=off
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r prismrag && useradd -r -g prismrag prismrag
+
+# Set working directory
+WORKDIR /app
+
+# Copy built distribution from builder
+COPY --from=builder /app/dist/*.whl ./
+
+# Install package
+RUN pip install *.whl && rm *.whl
+
+# Copy production configuration
+COPY deployment/production_config.yaml /app/config/production.yaml
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/models /app/outputs /app/logs /app/cache && \
+    chown -R prismrag:prismrag /app
+
+# Switch to non-root user
+USER prismrag
+
+# Set environment variables
+ENV ENVIRONMENT=production \
+    CONFIG_FILE=/app/config/production.yaml \
+    LOG_LEVEL=INFO
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health/live || exit 1
+
+# Default command
+CMD ["python", "-m", "src.main"]
+
+# Labels
+LABEL maintainer="ai-platform@yourcompany.com" \
+      version="1.0.0" \
+      description="PrismRAG Production System" \
+      org.opencontainers.image.source="https://github.com/yourorg/prismrag" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Build arguments
+ARG BUILD_DATE
+ARG VERSION
+ARG VCS_REF
+
+# Metadata
+LABEL org.opencontainers.image.created=$BUILD_DATE \
+      org.opencontainers.image.version=$VERSION \
+      org.opencontainers.image.revision=$VCS_REF

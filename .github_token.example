@@ -1,0 +1,10 @@
+# GitHub个人访问令牌示例文件
+# 将此文件重命名为 .github_token 并填入您的令牌
+# 或者设置 GITHUB_TOKEN 环境变量
+
+# 令牌权限要求:
+# - repo (完全控制私有仓库)
+# - workflow (更新GitHub Actions工作流)
+
+# 示例令牌格式:
+# ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

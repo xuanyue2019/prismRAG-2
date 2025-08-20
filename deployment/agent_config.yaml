@@ -1,0 +1,202 @@
+# Agent Lightning 智能体客户端配置
+agent:
+  # 智能体基本信息
+  name: "example_agent"
+  version: "1.0.0"
+  description: "示例智能体客户端"
+  
+  # 智能体框架选择
+  framework: "autogen"  # 可选: "autogen", "langchain", "openai", "custom"
+  
+  # 服务器连接配置
+  server:
+    url: "http://localhost:8000"
+    timeout: 30
+    retry_attempts: 3
+    retry_delay: 2
+    
+  # 模型配置 (如果智能体需要直接调用模型)
+  model:
+    name: "gpt-3.5-turbo"
+    provider: "openai"
+    api_key: ${OPENAI_API_KEY}
+    temperature: 0.7
+    max_tokens: 1000
+
+# 工具配置
+tools:
+  # 计算器工具
+  - name: "calculator"
+    type: "python"
+    description: "执行数学计算"
+    module: "math"
+    function: "evaluate_expression"
+    enabled: true
+    
+  # 网络搜索工具
+  - name: "web_search"
+    type: "api"
+    description: "执行网络搜索"
+    endpoint: "https://api.search.example.com/search"
+    api_key: ${SEARCH_API_KEY}
+    timeout: 10
+    enabled: true
+    
+  # 数据库查询工具
+  - name: "database_query"
+    type: "sql"
+    description: "执行数据库查询"
+    connection_string: ${DATABASE_URL}
+    timeout: 15
+    enabled: false
+    
+  # 文件操作工具
+  - name: "file_operations"
+    type: "python"
+    description: "文件读写操作"
+    module: "file_utils"
+    function: "handle_file_operation"
+    allowed_paths: ["./data", "./output"]
+    enabled: true
+
+# 训练配置
+training:
+  # 采样配置
+  sampling:
+    batch_size: 8
+    max_samples: 1000
+    sampling_strategy: "random"  # 可选: "random", "priority"
+    
+  # 轨迹收集
+  trajectory:
+    max_length: 20
+    include_thoughts: true
+    include_tool_calls: true
+    
+  # 奖励计算
+  reward:
+    compute_on_client: false  # 通常在服务器端计算
+    custom_reward_path: "./rewards/custom_reward.py"
+
+# 性能配置
+performance:
+  # 并发设置
+  concurrency:
+    max_workers: 4
+    max_tasks: 100
+    
+  # 缓存设置
+  cache:
+    enabled: true
+    size: 1000
+    ttl: 300
+    
+  # 资源限制
+  resources:
+    max_memory_mb: 1024
+    max_cpu_percent: 80
+    timeout_seconds: 300
+
+# 监控和日志配置
+monitoring:
+  # AgentOps 配置
+  agentops:
+    enabled: true
+    api_key: ${AGENTOPS_API_KEY}
+    project_name: "example-agent"
+    
+  # 日志配置
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "./logs/agent.log"
+    max_size: 10485760  # 10MB
+    backup_count: 5
+    
+  # 指标收集
+  metrics:
+    enabled: true
+    interval: 60  # 秒
+    endpoints:
+      - "response_time"
+      - "success_rate"
+      - "tool_usage"
+
+# 安全配置
+security:
+  # 认证配置
+  authentication:
+    enabled: false
+    type: "api_key"
+    api_key: ${AGENT_API_KEY}
+    
+  # 数据安全
+  data_protection:
+    encrypt_sensitive_data: true
+    allowed_data_domains: ["example.com"]
+    
+  # 网络安全
+  network:
+    validate_ssl: true
+    allowed_ips: []
+    blocked_ips: []
+
+# 错误处理和重试
+error_handling:
+  # 重试策略
+  retry_policy:
+    max_attempts: 3
+    backoff_factor: 2
+    max_delay: 30
+    
+  # 错误处理
+  on_error: "continue"  # 可选: "continue", "stop", "retry"
+  error_notification:
+    enabled: false
+    email: "admin@example.com"
+    webhook: "https://hooks.example.com/errors"
+    
+  # 超时处理
+  timeout_handling:
+    strategy: "cancel"  # 可选: "cancel", "retry", "ignore"
+    grace_period: 5
+
+# 自定义配置
+custom:
+  # 自定义回调
+  callbacks:
+    - "./callbacks/pre_processing.py"
+    - "./callbacks/post_processing.py"
+    
+  # 自定义插件
+  plugins:
+    - "./plugins/custom_sampling.py"
+    - "./plugins/data_augmentation.py"
+    
+  # 环境特定配置
+  environment: "development"  # 可选: "development", "staging", "production"
+  debug: true
+
+# 环境变量
+# 使用 ${VAR_NAME} 语法引用环境变量
+env:
+  - OPENAI_API_KEY
+  - AGENTOPS_API_KEY
+  - SEARCH_API_KEY
+  - DATABASE_URL
+  - AGENT_API_KEY
+
+# 版本控制和更新
+version_control:
+  auto_update: false
+  update_check_interval: 3600  # 1小时
+  rollback_on_failure: true
+
+# 健康检查配置
+health_check:
+  enabled: true
+  interval: 30  # 秒
+  endpoints:
+    - "/health"
+    - "/ready"
+  timeout: 5

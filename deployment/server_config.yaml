@@ -1,0 +1,186 @@
+# Agent Lightning 服务器配置
+server:
+  # 服务器网络配置
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  log_level: "info"
+  
+  # 连接设置
+  max_connections: 1000
+  timeout: 300
+  keepalive_timeout: 5
+
+# 模型配置
+model:
+  # 模型选择 (可选: "gpt-3.5-turbo", "gpt-4", "claude-3", 或本地模型路径)
+  name: "gpt-3.5-turbo"
+  
+  # 模型提供商 (可选: "openai", "vllm", "huggingface", "anthropic")
+  provider: "openai"
+  
+  # API 密钥 (从环境变量读取或直接配置)
+  api_key: ${OPENAI_API_KEY}
+  
+  # vLLM 专用配置
+  vllm:
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.9
+    max_model_len: 4096
+    
+  # 本地模型配置
+  local_model:
+    model_path: "/path/to/your/model"
+    device: "cuda"  # 或 "cpu"
+    dtype: "auto"
+
+# 训练配置
+training:
+  # 批量设置
+  batch_size: 32
+  micro_batch_size: 8
+  gradient_accumulation_steps: 4
+  
+  # 学习率设置
+  learning_rate: 1e-5
+  weight_decay: 0.01
+  warmup_steps: 100
+  
+  # 优化器设置
+  optimizer: "adamw"
+  betas: [0.9, 0.999]
+  eps: 1e-8
+  
+  # 调度器设置
+  scheduler: "linear"
+  num_training_steps: 10000
+  
+  # 检查点设置
+  checkpoint_dir: "./checkpoints"
+  save_steps: 500
+  save_total_limit: 5
+  
+  # 评估设置
+  eval_steps: 100
+  eval_batch_size: 16
+
+# 数据配置
+data:
+  # 训练数据路径
+  train_data_path: "./data/train.jsonl"
+  eval_data_path: "./data/eval.jsonl"
+  
+  # 数据格式
+  format: "jsonl"  # 可选: "jsonl", "csv", "parquet"
+  
+  # 数据预处理
+  max_length: 2048
+  truncation: true
+  padding: "longest"
+  
+  # 数据增强
+  augmentation: false
+  augmentation_rate: 0.1
+
+# 奖励函数配置
+reward:
+  # 奖励类型 (可选: "custom", "binary", "continuous")
+  type: "custom"
+  
+  # 自定义奖励函数路径
+  custom_reward_path: "./reward_functions/custom_reward.py"
+  
+  # 奖励缩放
+  scale: 1.0
+  shift: 0.0
+  
+  # 奖励标准化
+  normalize: true
+  clip_value: 10.0
+
+# 追踪和监控配置
+monitoring:
+  # AgentOps 配置
+  agentops:
+    enabled: true
+    api_key: ${AGENTOPS_API_KEY}
+    project_name: "agent-lightning"
+    
+  # 日志配置
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "./logs/server.log"
+    max_size: 10485760  # 10MB
+    backup_count: 5
+    
+  # 指标监控
+  metrics:
+    enabled: true
+    port: 9090
+    endpoint: "/metrics"
+    
+  # 性能监控
+  performance:
+    enable_profiling: false
+    profile_dir: "./profiles"
+
+# 安全配置
+security:
+  # 认证配置
+  authentication:
+    enabled: false
+    type: "bearer"  # 可选: "bearer", "basic", "api_key"
+    tokens: []
+    
+  # CORS 配置
+  cors:
+    enabled: true
+    origins: ["*"]
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    headers: ["*"]
+    
+  # 速率限制
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60
+    burst_limit: 10
+
+# 网络和性能优化
+performance:
+  # 连接池设置
+  connection_pool:
+    max_size: 100
+    timeout: 30
+    
+  # 缓存设置
+  cache:
+    enabled: true
+    size: 1000
+    ttl: 300  # 5分钟
+    
+  # 压缩设置
+  compression:
+    enabled: true
+    level: 6
+
+# 环境变量覆盖
+# 可以使用 ${VAR_NAME} 语法引用环境变量
+env:
+  - OPENAI_API_KEY
+  - AGENTOPS_API_KEY
+  - CUDA_VISIBLE_DEVICES
+  - HF_TOKEN
+  - ANTHROPIC_API_KEY
+
+# 自定义配置
+custom:
+  # 自定义回调函数
+  callbacks:
+    - "./callbacks/early_stopping.py"
+    - "./callbacks/model_checkpoint.py"
+    
+  # 自定义插件
+  plugins:
+    - "./plugins/custom_optimizer.py"
+    - "./plugins/data_augmentation.py"

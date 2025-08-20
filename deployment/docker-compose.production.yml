@@ -1,0 +1,516 @@
+# PrismRAG Production Docker Compose
+# Multi-service production deployment with all dependencies
+
+version: '3.8'
+
+x-common-variables: &common-variables
+  # Environment variables
+  ENVIRONMENT: production
+  LOG_LEVEL: INFO
+  PYTHONUNBUFFERED: 1
+  PYTHONDONTWRITEBYTECODE: 1
+  # Configuration
+  CONFIG_FILE: /app/config/production.yaml
+  # Paths
+  DATA_DIR: /data/prismrag
+  MODEL_DIR: /models/prismrag
+  OUTPUT_DIR: /outputs/prismrag
+  LOG_DIR: /var/log/prismrag
+  CACHE_DIR: /cache/prismrag
+
+x-common-labels: &common-labels
+  # Common labels for all services
+  com.prismrag.version: "1.0.0"
+  com.prismrag.environment: "production"
+  com.prismrag.managed-by: "docker-compose"
+  com.prismrag.component: "prismrag"
+
+x-logging: &logging
+  # Logging configuration
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "100m"
+      max-file: "10"
+      tag: "{{.Name}}"
+
+services:
+  # Main PrismRAG application
+  prismrag-app:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.production
+      target: production
+    image: prismrag-app:production
+    container_name: prismrag-app
+    restart: unless-stopped
+    environment:
+      <<: *common-variables
+      # Service-specific environment variables
+      SERVICE_NAME: prismrag-app
+      PORT: 8000
+      # API Keys (from environment)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_SEARCH_API_KEY: ${GOOGLE_SEARCH_API_KEY}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY}
+      HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN}
+    ports:
+      - "8000:8000"   # Application port
+      - "8080:8080"   # Health check port
+      - "9090:9090"   # Metrics port
+    volumes:
+      - prismrag_data:/data/prismrag
+      - prismrag_models:/models/prismrag
+      - prismrag_outputs:/outputs/prismrag
+      - prismrag_logs:/var/log/prismrag
+      - prismrag_cache:/cache/prismrag
+      - ./production_config.yaml:/app/config/production.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    labels:
+      <<: *common-labels
+      traefik.enable: "true"
+      traefik.http.routers.prismrag.rule: "Host(`prismrag.yourdomain.com`)"
+      traefik.http.services.prismrag.loadbalancer.server.port: "8000"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 32G
+        reservations:
+          cpus: '4'
+          memory: 16G
+
+  # Redis for caching
+  redis:
+    image: redis:7.2-alpine
+    container_name: prismrag-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "redis"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: prismrag-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: prismrag
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d prismrag"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "postgres"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  # RabbitMQ for message queue
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: prismrag-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP port
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: /prismrag
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "rabbitmq"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prismrag-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "prometheus"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: prismrag-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana-datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "grafana"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+
+  # NGINX for reverse proxy and load balancing
+  nginx:
+    image: nginx:alpine
+    container_name: prismrag-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/ssl/certs:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - prismrag-app
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "nginx"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Worker for background tasks
+  prismrag-worker:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.production
+      target: production
+    image: prismrag-worker:production
+    container_name: prismrag-worker
+    restart: unless-stopped
+    environment:
+      <<: *common-variables
+      SERVICE_NAME: prismrag-worker
+      WORKER_TYPE: background
+      # API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_SEARCH_API_KEY: ${GOOGLE_SEARCH_API_KEY}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY}
+    volumes:
+      - prismrag_data:/data/prismrag
+      - prismrag_models:/models/prismrag
+      - prismrag_outputs:/outputs/prismrag
+      - prismrag_logs:/var/log/prismrag
+      - prismrag_cache:/cache/prismrag
+      - ./production_config.yaml:/app/config/production.yaml:ro
+    command: ["python", "-m", "src.worker"]
+    depends_on:
+      - redis
+      - rabbitmq
+      - postgres
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; redis.Redis(host='redis', password='${REDIS_PASSWORD}').ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "worker"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 16G
+      replicas: 2
+
+  # Scheduler for periodic tasks
+  prismrag-scheduler:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.production
+      target: production
+    image: prismrag-scheduler:production
+    container_name: prismrag-scheduler
+    restart: unless-stopped
+    environment:
+      <<: *common-variables
+      SERVICE_NAME: prismrag-scheduler
+      # API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - prismrag_data:/data/prismrag
+      - prismrag_logs:/var/log/prismrag
+      - ./production_config.yaml:/app/config/production.yaml:ro
+    command: ["python", "-m", "src.scheduler"]
+    depends_on:
+      - redis
+      - rabbitmq
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; redis.Redis(host='redis', password='${REDIS_PASSWORD}').ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "scheduler"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # Backup service
+  prismrag-backup:
+    image: prismrag-app:production
+    container_name: prismrag-backup
+    restart: unless-stopped
+    environment:
+      <<: *common-variables
+      SERVICE_NAME: prismrag-backup
+    volumes:
+      - prismrag_data:/data/prismrag
+      - prismrag_models:/models/prismrag
+      - backup_data:/backups
+      - ./production_config.yaml:/app/config/production.yaml:ro
+    command: ["python", "-m", "src.backup"]
+    depends_on:
+      - postgres
+      - redis
+    labels:
+      <<: *common-labels
+      com.prismrag.component: "backup"
+    <<: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+# Named volumes for data persistence
+volumes:
+  prismrag_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/prismrag
+  prismrag_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /models/prismrag
+  prismrag_outputs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /outputs/prismrag
+  prismrag_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/log/prismrag
+  prismrag_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /cache/prismrag
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  backup_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /backups
+
+# Networks
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+# Resource constraints
+x-resource-defaults: &resource-defaults
+  deploy:
+    resources:
+      limits:
+        cpus: '0.5'
+        memory: 1G
+      reservations:
+        cpus: '0.25'
+        memory: 512M
+
+# Health check defaults
+x-healthcheck-defaults: &healthcheck-defaults
+  healthcheck:
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
+
+# Logging defaults
+x-logging-defaults: &logging-defaults
+  logging:
+    driver: json-file
+    options:
+      max-size: "100m"
+      max-file: "10"
+      tag: "{{.Name}}"
+
+# Configuration validation
+x-config-validation:
+  # Ensure required environment variables are set
+  - &check-env-vars
+    condition: service_healthy
+    test: ["CMD", "python", "-c", "import os; required_vars = ['OPENAI_API_KEY', 'POSTGRES_PASSWORD', 'REDIS_PASSWORD']; missing = [v for v in required_vars if not os.getenv(v)]; assert not missing, f'Missing env vars: {missing}'; print('All required environment variables are set')"]
+    interval: 60s
+    timeout: 30s
+    retries: 5
+
+# Deployment strategy
+x-deployment-strategy:
+  update_config:
+    parallelism: 1
+    delay: 30s
+    order: start-first
+  rollback_config:
+    parallelism: 0
+    order: stop-first
+  restart_policy:
+    condition: on-failure
+    delay: 5s
+    max_attempts: 3
+    window: 120s
+
+# Monitoring and alerts
+x-monitoring:
+  labels:
+    prometheus.io.scrape: "true"
+    prometheus.io.port: "9090"
+    prometheus.io.path: "/metrics"
+
+# Security settings
+x-security:
+  read_only: true
+  tmpfs:
+    - /tmp:rw,size=64M
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - NET_BIND_SERVICE
+
+# Production notes
+# This docker-compose file is optimized for production deployment
+# Make sure to:
+# 1. Set all required environment variables in .env.production
+# 2. Configure proper SSL certificates for NGINX
+# 3. Set up proper backup strategies
+# 4. Configure monitoring and alerting
+# 5. Set resource limits according to your infrastructure
+
+# To deploy:
+# 1. cp .env.example .env.production
+# 2. Edit .env.production with your values
+# 3. docker-compose -f docker-compose.production.yml up -d
+
+# To scale workers:
+# docker-compose -f docker-compose.production.yml up -d --scale prismrag-worker=4
+
+# To view logs:
+# docker-compose -f docker-compose.production.yml logs -f
+
+# To update:
+# docker-compose -f docker-compose.production.yml pull
+# docker-compose -f docker-compose.production.yml up -d
